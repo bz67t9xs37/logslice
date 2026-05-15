@@ -78,3 +78,13 @@ func TestScan_ContinuationLines(t *testing.T) {
 		t.Fatalf("expected 2 lines (entry + continuation), got %d: %v", len(lines), lines)
 	}
 }
+
+func TestScan_ExactBoundary(t *testing.T) {
+	// Verify that lines whose timestamp equals start or end are included.
+	start := time.Date(2024, 1, 15, 10, 1, 0, 0, time.UTC)
+	end := time.Date(2024, 1, 15, 10, 4, 0, 0, time.UTC)
+	lines := collectLines(t, sampleLog, start, end)
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines (10:01–10:04 inclusive), got %d: %v", len(lines), lines)
+	}
+}
