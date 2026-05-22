@@ -1,17 +1,18 @@
-// Package index implements sparse byte-offset indexing for structured log files.
+// Package index builds and queries a sparse timestamp index over a structured
+// log file, enabling O(log n) seek-to-time without scanning the entire file.
 //
-// Building an index samples the log file at regular byte intervals, recording
-// the file offset and parsed timestamp of each sampled line. The index can then
-// be queried to find the best byte offset to seek to before beginning a
-// time-range scan, avoiding a full sequential read from the start of the file.
+// # Building an index
 //
-// Typical usage:
+// Call [Build] with the path to a log file and a timestamp-parsing function.
+// Build scans every line, extracts its timestamp, and records the byte offset
+// of each line that successfully parses. The resulting []Entry slice is sorted
+// by timestamp and can be queried with [FindOffset].
 //
-//	idx, err := index.Build(f, size, 1<<20, parser.Parse)
-//	if err != nil { ... }
-//	seekOffset := idx.FindOffset(startTime)
-//	// seek f to seekOffset, then hand off to scanner
+// # Persistent caching
 //
-// The index is held entirely in memory and is not persisted; it is intended to
-// be rebuilt cheaply on each invocation for files that fit the sampling budget.
+// Repeated runs over the same large file can be expensive. The cache sub-API
+// ([LoadCache], [SaveCache], [CachePath]) persists the index alongside the
+// source file as a hidden gob-encoded file. The cache is validated against the
+// file's mtime and size; a mismatch causes a transparent cache miss so callers
+// always receive a correct index.
 package index
