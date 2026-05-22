@@ -1,68 +1,90 @@
-// Package splitter orchestrates reading, filtering, and writing log lines
-// within a specified time range.
+// Package splitter wires together the scanner, filter, and output components
+// to extract a time-range window from a log file.
 package splitter
 
 import (
+	"bufio"
 	"fmt"
-	"io"
+	"os"
+	"time"
 
 	"logslice/internal/filter"
+	"logslice/internal/index"
 	"logslice/internal/output"
-	"logslice/internal/scanner"
 	"logslice/internal/timeparse"
 )
 
-// Config holds the parameters for a split operation.
+// Config holds the parameters for a single split operation.
 type Config struct {
-	// Input is the source log data to read from.
-	Input io.ReadSeeker
-	// Output is the destination for matched log lines.
-	Output io.Writer
-	// Start is the beginning of the time window (inclusive), RFC3339 or similar.
-	Start string
-	// End is the end of the time window (inclusive).
-	End string
+	InputPath  string
+	OutputPath string
+	Start      string
+	End        string
+	// SampleEvery controls the index sampling interval in bytes (0 = default 1 MiB).
+	SampleEvery int64
 }
 
-// Result summarises a completed split operation.
-type Result struct {
-	LinesScanned int
-	LinesWritten int
-}
+// Run opens the input file, builds a sparse index for fast seeking, then
+// streams matching lines to the output file.
+func Run(cfg Config) error {
+	parser := timeparse.New()
 
-// Run executes the log-splitting pipeline defined by cfg.
-func Run(cfg Config) (Result, error) {
-	p := timeparse.New()
-
-	start, end, err := p.ParseRange(cfg.Start, cfg.End)
+	start, end, err := parser.ParseRange(cfg.Start, cfg.End)
 	if err != nil {
-		return Result{}, fmt.Errorf("splitter: parse range: %w", err)
+		return fmt.Errorf("invalid time range: %w", err)
 	}
 
-	f := filter.New(p, start, end)
-	w := output.New(cfg.Output)
-	defer w.Close() //nolint:errcheck
+	f, err := os.Open(cfg.InputPath)
+	if err != nil {
+		return fmt.Errorf("open input: %w", err)
+	}
+	defer f.Close()
 
-	s := scanner.New(cfg.Input, f)
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat input: %w", err)
+	}
 
-	var res Result
-	for {
-		line, ok, err := s.Next()
-		if err != nil {
-			return res, fmt.Errorf("splitter: scan: %w", err)
+	idx, err := index.Build(f, info.Size(), cfg.SampleEvery, func(line string) (time.Time, error) {
+		return parser.Parse(line)
+	})
+	if err != nil {
+		return fmt.Errorf("build index: %w", err)
+	}
+
+	seekOffset := idx.FindOffset(start)
+	if _, err := f.Seek(seekOffset, 0); err != nil {
+		return fmt.Errorf("seek: %w", err)
+	}
+
+	w, err := output.NewFile(cfg.OutputPath)
+	if err != nil {
+		return fmt.Errorf("open output: %w", err)
+	}
+	defer w.Close()
+
+	fl := filter.New(parser, start, end)
+	scanner := bufio.NewScanner(f)
+	pastWindow := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		result := fl.Evaluate(line)
+		switch result {
+		case filter.Inside:
+			if err := w.WriteLine(line); err != nil {
+				return fmt.Errorf("write: %w", err)
+			}
+		case filter.After:
+			pastWindow = true
 		}
-		if !ok {
+		if pastWindow {
 			break
 		}
-		res.LinesScanned++
-		if err := w.WriteLine(line); err != nil {
-			return res, fmt.Errorf("splitter: write: %w", err)
-		}
-		res.LinesWritten++
 	}
 
-	if err := w.Close(); err != nil {
-		return res, fmt.Errorf("splitter: flush: %w", err)
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan: %w", err)
 	}
-	return res, nil
+	return nil
 }
