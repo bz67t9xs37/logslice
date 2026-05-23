@@ -1,18 +1,13 @@
-// Package index builds and queries a sparse timestamp index over a structured
-// log file, enabling O(log n) seek-to-time without scanning the entire file.
+// Package index builds and caches a time-offset index for structured log
+// files, enabling fast seek-based extraction of time-range windows without
+// scanning the entire file.
 //
-// # Building an index
+// Build walks a log file and records the byte offset and parsed timestamp for
+// each line, returning a slice of Entry values sorted by time. The index can
+// be persisted to disk with SaveCache and reloaded with LoadCache; staleness
+// is detected via the source file's modification time.
 //
-// Call [Build] with the path to a log file and a timestamp-parsing function.
-// Build scans every line, extracts its timestamp, and records the byte offset
-// of each line that successfully parses. The resulting []Entry slice is sorted
-// by timestamp and can be queried with [FindOffset].
-//
-// # Persistent caching
-//
-// Repeated runs over the same large file can be expensive. The cache sub-API
-// ([LoadCache], [SaveCache], [CachePath]) persists the index alongside the
-// source file as a hidden gob-encoded file. The cache is validated against the
-// file's mtime and size; a mismatch causes a transparent cache miss so callers
-// always receive a correct index.
+// FindRange uses binary search over an Entry slice to locate the half-open
+// interval [start, end) so callers can seek directly to the relevant portion
+// of the file.
 package index
